@@ -1,0 +1,92 @@
+name: SonarQube Scan
+
+on:
+  push:
+    branches:
+      - dev
+      - master
+  pull_request:
+    branches:
+      - dev
+      - master
+
+jobs:
+  sonarqube:
+    name: Build and analyze
+    runs-on: ["self-hosted", "linux", "amd64"]
+    env:
+      SONAR_SCANNER_VERSION: ${{ vars.SONAR_SCANNER_VERSION || '7.0.2.4839' }}
+      SONAR_SOURCES: ${{ vars.SONAR_SOURCES || '.' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Required for SonarQube to analyze Git history
+
+      - name: Check required tools
+        run: |
+          command -v curl >/dev/null || { echo "::error::curl is not installed"; exit 1; }
+          command -v unzip >/dev/null || { echo "::error::unzip is not installed"; exit 1; }
+          command -v java >/dev/null || { echo "::error::Java is not installed"; exit 1; }
+          echo "Required tools (curl, unzip, java) are installed."
+
+      - name: Set up SonarScanner CLI
+        run: |
+          SONAR_SCANNER_HOME=$HOME/.sonar/sonar-scanner-${SONAR_SCANNER_VERSION}-linux-x64
+          SONAR_SCANNER_ZIP=$HOME/.sonar/sonar-scanner.zip
+
+          if [ -f "$SONAR_SCANNER_HOME/bin/sonar-scanner" ]; then
+            echo "SonarScanner CLI ${SONAR_SCANNER_VERSION} already installed at $SONAR_SCANNER_HOME"
+            exit 0
+          fi
+
+          mkdir -p "$HOME/.sonar" || { echo "::error::Failed to create directory $HOME/.sonar"; exit 1; }
+
+          echo "Downloading SonarScanner CLI ${SONAR_SCANNER_VERSION}..."
+          curl --retry 3 --connect-timeout 10 -sSLo "$SONAR_SCANNER_ZIP" \
+            "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_SCANNER_VERSION}-linux-x64.zip" || {
+            echo "::error::Failed to download SonarScanner CLI"; exit 1;
+          }
+
+          echo "Unzipping SonarScanner CLI..."
+          unzip -o "$SONAR_SCANNER_ZIP" -d "$HOME/.sonar/" || { echo "::error::Failed to unzip SonarScanner CLI"; exit 1; }
+
+          if [ ! -f "$SONAR_SCANNER_HOME/bin/sonar-scanner" ]; then
+            echo "::error::SonarScanner CLI binary not found"
+            exit 1
+          }
+
+          echo "SonarScanner CLI ${SONAR_SCANNER_VERSION} installed successfully."
+
+      - name: Add SonarScanner to PATH
+        run: |
+          echo "$HOME/.sonar/sonar-scanner-${SONAR_SCANNER_VERSION}-linux-x64/bin" >> $GITHUB_PATH
+          export PATH="$HOME/.sonar/sonar-scanner-${SONAR_SCANNER_VERSION}-linux-x64/bin:$PATH"
+
+      - name: Verify SonarQube secrets
+        env:
+          SONARQUBE_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
+          SONARQUBE_HOST: ${{ secrets.SONARQUBE_HOST }}
+        run: |
+          [ -z "$SONARQUBE_TOKEN" ] && { echo "::error::SONARQUBE_TOKEN secret is not set"; exit 1; }
+          [ -z "$SONARQUBE_HOST" ] && { echo "::error::SONARQUBE_HOST secret is not set"; exit 1; }
+          echo "SonarQube secrets verified."
+
+      - name: Run SonarScanner
+        env:
+          SONARQUBE_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
+          SONARQUBE_HOST: ${{ secrets.SONARQUBE_HOST }}
+          PROJECT_KEY: ${{ github.repository }}
+        run: |
+          # Replace '/' with '_' in project key for SonarQube compatibility
+          SANITIZED_PROJECT_KEY=$(echo "$PROJECT_KEY" | tr '/' '_')
+          export PATH="$HOME/.sonar/sonar-scanner-${SONAR_SCANNER_VERSION}-linux-x64/bin:$PATH"
+          sonar-scanner \
+            -Dsonar.projectKey="$SANITIZED_PROJECT_KEY" \
+            -Dsonar.projectName="${PROJECT_KEY}" \
+            -Dsonar.sources="${SONAR_SOURCES}" \
+            -Dsonar.host.url="$SONARQUBE_HOST" \
+            -Dsonar.token="$SONARQUBE_TOKEN" || {
+            echo "::error::SonarScanner analysis failed. Check SonarQube server logs or configuration."
+            exit 1
+          }
