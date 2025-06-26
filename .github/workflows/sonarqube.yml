@@ -3,6 +3,11 @@ name: SonarQube Scan
 on:
   push:
     branches:
+      - dev
+      - master
+  pull_request:
+    branches:
+      - dev
       - master
 
 jobs:
@@ -10,18 +15,20 @@ jobs:
     name: Build and analyze
     runs-on: ["self-hosted", "linux", "amd64"]
     env:
-      SONAR_SCANNER_VERSION: 7.0.2.4839
+      SONAR_SCANNER_VERSION: ${{ vars.SONAR_SCANNER_VERSION || '7.0.2.4839' }}
+      SONAR_SOURCES: ${{ vars.SONAR_SOURCES || '.' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0  # Required for SonarQube to analyze Git history
 
       - name: Check required tools
         run: |
           command -v curl >/dev/null || { echo "::error::curl is not installed"; exit 1; }
           command -v unzip >/dev/null || { echo "::error::unzip is not installed"; exit 1; }
-          echo "Required tools (curl, unzip) are installed."
+          command -v java >/dev/null || { echo "::error::Java is not installed"; exit 1; }
+          echo "Required tools (curl, unzip, java) are installed."
 
       - name: Set up SonarScanner CLI
         run: |
@@ -54,7 +61,6 @@ jobs:
       - name: Add SonarScanner to PATH
         run: |
           echo "$HOME/.sonar/sonar-scanner-${SONAR_SCANNER_VERSION}-linux-x64/bin" >> $GITHUB_PATH
-          # Ensure PATH is updated in current session
           export PATH="$HOME/.sonar/sonar-scanner-${SONAR_SCANNER_VERSION}-linux-x64/bin:$PATH"
 
       - name: Verify SonarQube secrets
@@ -70,11 +76,15 @@ jobs:
         env:
           SONARQUBE_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
           SONARQUBE_HOST: ${{ secrets.SONARQUBE_HOST }}
+          PROJECT_KEY: ${{ github.repository }}
         run: |
+          # Replace '/' with '_' in project key for SonarQube compatibility
+          SANITIZED_PROJECT_KEY=$(echo "$PROJECT_KEY" | tr '/' '_')
           export PATH="$HOME/.sonar/sonar-scanner-${SONAR_SCANNER_VERSION}-linux-x64/bin:$PATH"
           sonar-scanner \
-            -Dsonar.projectKey=rose-pine-gitea \
-            -Dsonar.sources=. \
+            -Dsonar.projectKey="$SANITIZED_PROJECT_KEY" \
+            -Dsonar.projectName="${PROJECT_KEY}" \
+            -Dsonar.sources="${SONAR_SOURCES}" \
             -Dsonar.host.url="$SONARQUBE_HOST" \
             -Dsonar.token="$SONARQUBE_TOKEN" || {
             echo "::error::SonarScanner analysis failed. Check SonarQube server logs or configuration."
